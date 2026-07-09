@@ -2936,9 +2936,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             // can be produced.
             const hasCP = yield* checkpoint.hasCheckpoint(sessionID).pipe(Effect.catch(() => Effect.succeed(false)))
             if (hasCP) {
-              // Wait for any running writer so the freshest checkpoint is available
-              yield* checkpoint.waitForWriter(sessionID).pipe(Effect.ignore)
-
+              // Rebuild from the on-disk checkpoint immediately. We intentionally
+              // do NOT block on an in-flight writer here: renderRebuildContext
+              // (via insertRebuildBoundary) already uses the current on-disk
+              // checkpoint.md, and the background writer keeps refreshing it.
+              // Blocking up to the writer's full runtime (minutes) is what caused
+              // the main agent to appear hung → user abort → worker teardown →
+              // writer killed → wedge. A slightly-stale checkpoint now beats a
+              // fresh one that never arrives.
               const boundary = yield* checkpoint
                 .lastBoundary(sessionID)
                 .pipe(Effect.catch(() => Effect.succeed(undefined)))
@@ -3499,16 +3504,20 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }
 
               // Main-agent provider-signalled overflow: insert a checkpoint
-              // boundary marker (never deletes). Prefer rebuild over compaction:
-              // if a writer is running or finished, wait (bounded) and rebuild
-              // from it. Fall back to compaction only when no boundary exists.
+              // boundary marker (never deletes). Prefer rebuild over compaction.
+              // We do NOT block on the writer here — renderRebuildContext (via
+              // insertRebuildBoundary) uses the on-disk checkpoint immediately
+              // when one exists, and only waits when there is no checkpoint at
+              // all (first-ever writer). Blocking the whole writer runtime here
+              // is what made the agent appear hung and triggered the abort→
+              // teardown→writer-kill wedge. Fall back to compaction only when no
+              // boundary can be produced.
               const writerRunning = yield* checkpoint.isWriterRunning(sessionID)
                 .pipe(Effect.catch(() => Effect.succeed(false)))
               const hasCP = yield* checkpoint.hasCheckpoint(sessionID)
                 .pipe(Effect.catch(() => Effect.succeed(false)))
 
               if (writerRunning || hasCP) {
-                yield* checkpoint.waitForWriter(sessionID).pipe(Effect.ignore)
                 const boundary2 = yield* checkpoint.lastBoundary(sessionID)
                   .pipe(Effect.catch(() => Effect.succeed(undefined)))
                 const boundary2Msg = boundary2 ? msgs.find((m) => m.info.id === boundary2) : undefined

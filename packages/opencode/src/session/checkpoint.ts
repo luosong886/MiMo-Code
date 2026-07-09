@@ -15,6 +15,7 @@ import { Instance } from "@/project/instance"
 import { ProjectID } from "@/project/schema"
 import { SessionTable } from "./session.sql"
 import * as Session from "./session"
+import { SessionStatus } from "./status"
 import { MessageV2 } from "./message-v2"
 import { SessionID, MessageID, PartID } from "./schema"
 import { Log, Token } from "../util"
@@ -1055,14 +1056,45 @@ export const layer: Layer.Layer<
 
       const inFlight = writers.get(sessionID)
       if (inFlight) {
-        log.info("rebuild waiting for in-flight writer", { sessionID })
-        yield* Effect.race(
-          Deferred.await(inFlight.writing).pipe(Effect.as("done" as const)),
-          Effect.sleep("60 seconds").pipe(
-            Effect.tap(() => Effect.sync(() => log.warn("writer wait timeout — using on-disk checkpoint", { sessionID }))),
-            Effect.as("timeout" as const),
-          ),
-        ).pipe(Effect.catch(() => Effect.succeed("error" as const)))
+        // A checkpoint writer runs in the background and can take minutes on a
+        // large range. We must NOT block the user-facing rebuild on it when we
+        // already have an on-disk checkpoint.md to rebuild from — doing so
+        // stalls the main agent (the user sees "no response"), which in
+        // practice leads to a manual abort that tears down the worker and kills
+        // the very writer we were waiting for, so the token count never falls
+        // and the session wedges. Instead: if a checkpoint file already exists,
+        // use it immediately and let the writer keep refreshing it in the
+        // background. Only block when there is NO on-disk checkpoint at all
+        // (first-ever checkpoint for this session), because then waiting is the
+        // only way to produce any rebuild context; even then, cap the wait.
+        const onDisk = yield* Effect.promise(() => Bun.file(checkpointPath(sessionID)).exists())
+        if (onDisk) {
+          log.info("rebuild using on-disk checkpoint; writer still running in background", { sessionID })
+        } else {
+          log.info("rebuild waiting for first-ever writer (no on-disk checkpoint yet)", { sessionID })
+          // Surface a user-visible reason for the wait. This is the only path
+          // that still blocks the main agent (first checkpoint, nothing on disk
+          // to rebuild from), so without a message the TUI would show a silent
+          // hang — historically the trigger for a manual abort. We publish the
+          // busy status directly on the bus (same event SessionStatus.set uses)
+          // to avoid taking a hard dependency on SessionStatus.Service here; the
+          // runLoop owns the surrounding busy/idle lifecycle and resets it after.
+          yield* bus
+            .publish(SessionStatus.Event.Status, {
+              sessionID,
+              status: { type: "busy", message: "Preparing conversation context…" },
+            })
+            .pipe(Effect.ignore)
+          yield* Effect.race(
+            Deferred.await(inFlight.writing).pipe(Effect.as("done" as const)),
+            Effect.sleep("60 seconds").pipe(
+              Effect.tap(() =>
+                Effect.sync(() => log.warn("first-writer wait timeout — proceeding without checkpoint", { sessionID })),
+              ),
+              Effect.as("timeout" as const),
+            ),
+          ).pipe(Effect.catch(() => Effect.succeed("error" as const)))
+        }
       }
 
       const cfg = yield* config.get()

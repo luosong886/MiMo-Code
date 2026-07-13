@@ -38,7 +38,12 @@ const runSchema = z.strictObject({
     .describe(
       "(optional) Inline JS workflow script; must begin with `export const meta = {...}`. Provide EITHER name OR script, not both.",
     ),
-  args: z.any().optional().describe("(optional) JSON value exposed to the script as `args`."),
+  args: z
+    .any()
+    .optional()
+    .describe(
+      "(optional) Input value exposed to the script as the global `args`, verbatim. Pass objects/arrays as ACTUAL JSON values — NOT as a JSON string. e.g. args: { theme: \"...\", signals: { trademark: \"required\" } }, never args: \"{ \\\"theme\\\": ... }\".",
+    ),
   workspace: z
     .string()
     .optional()

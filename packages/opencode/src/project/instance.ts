@@ -196,6 +196,13 @@ export const Instance = {
     const current = cache.get(directory)
     if (!current) return
 
+    // NOTE: withTimeout only bounds the *wait*, not the underlying promise —
+    // a slow disposer may still complete after the timeout fires.  The
+    // directoryDisposals guard above is a soft happens-before (bounded by
+    // DIRECTORY_DISPOSE_TIMEOUT), not a true barrier.  If a disposer times
+    // out and the same directory is re-provided immediately, the background
+    // disposer can still race with the new instance and tear down
+    // per-directory state (e.g. session-cwd entries) once it finally finishes.
     const cleanup = withTimeout(disposeCached(directory, current), DIRECTORY_DISPOSE_TIMEOUT).catch((error) => {
       Log.Default.warn("instance dispose did not complete", { directory, error })
     })

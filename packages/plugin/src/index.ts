@@ -572,6 +572,12 @@ export interface Hooks {
       assistantMessageID?: string
       /** Full raw agent slice: user text, synthetic reminders, tool calls/results, reasoning, etc. */
       trajectory: TrajectoryMessage[]
+      /**
+       * Assembled system prompt (agent prompt + provider prompt + additions like env/skills/instructions
+       * + memory + plugin transforms) as sent to the LLM on the LAST step of this session run.
+       * Missing when the session ended before any LLM step ran (e.g. session.pre cancelled).
+       */
+      systemPrompt?: string[]
     },
     output: {},
   ) => Promise<void>
@@ -607,6 +613,12 @@ export interface Hooks {
       finalText?: string
       /** Raw messages through this step (includes synthetic reminders, tools, reasoning). */
       trajectory: TrajectoryMessage[]
+      /**
+       * Assembled system prompt as sent to the LLM for THIS step
+       * (agent prompt + provider prompt + additions + memory + plugin transforms).
+       * Missing when the step was cancelled before the model call.
+       */
+      systemPrompt?: string[]
     },
     output: {},
   ) => Promise<void>

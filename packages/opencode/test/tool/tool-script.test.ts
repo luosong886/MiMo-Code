@@ -155,7 +155,7 @@ describe("tool_script", () => {
 
   test("console.log is captured into Logs block", async () => {
     const result = await runToolScript(`console.log("hello", { a: 1 }); return 1`, [])
-    expect(result.output).toContain("Logs:")
+    expect(result.output).toContain("<logs>")
     expect(result.output).toContain('hello {"a":1}')
   })
 

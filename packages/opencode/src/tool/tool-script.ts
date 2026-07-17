@@ -169,7 +169,7 @@ export const ToolScriptTool = Tool.define(
             return {
               title: "code too large",
               metadata: { status: "code_error", toolCalls: 0 },
-              output: `status: code_error\ncode exceeds ${MAX_CODE_BYTES} bytes`,
+              output: `<tool_script status="code_error">\n<error_message>\ncode exceeds ${MAX_CODE_BYTES} bytes\n</error_message>\n</tool_script>`,
             }
           }
 
@@ -205,7 +205,7 @@ export const ToolScriptTool = Tool.define(
             return {
               title: "transpile error",
               metadata: { status: "code_error", toolCalls: 0 },
-              output: `status: code_error\n${transpiled.error}`,
+              output: `<tool_script status="code_error">\n<error_message>\n${transpiled.error}\n</error_message>\n</tool_script>`,
             }
           }
 
@@ -313,8 +313,8 @@ export const ToolScriptTool = Tool.define(
           const traceLines = trace.map(
             (t) => `- ${t.name} → ${t.status}${t.error ? ` (${t.error.slice(0, 200)})` : ""} [${t.durationMs}ms]`,
           )
-          const logBlock = logs.length ? `\n\nLogs:\n${logs.join("\n")}` : ""
-          const traceBlock = trace.length ? `\n\nTool calls (${trace.length}):\n${traceLines.join("\n")}` : ""
+          const logBlock = logs.length ? `<logs>\n${logs.join("\n")}\n</logs>\n` : ""
+          const traceBlock = trace.length ? `<trace count="${trace.length}">\n${traceLines.join("\n")}\n</trace>\n` : ""
 
           if (outcome._tag === "Failure") {
             const message = outcome.failure instanceof Error ? outcome.failure.message : String(outcome.failure)
@@ -329,23 +329,33 @@ export const ToolScriptTool = Tool.define(
             return {
               title: status,
               metadata: { status, toolCalls: trace.length },
-              output: `status: ${status}\n${message}${logBlock}${traceBlock}`,
+              output: `<tool_script status="${status}">\n<error_message>\n${message}\n</error_message>\n${logBlock}${traceBlock}</tool_script>`,
             }
           }
 
-          const json = JSON.stringify(outcome.success, null, 2) ?? "undefined"
-          if (Buffer.byteLength(json, "utf8") > MAX_RESULT_BYTES) {
+          // XML-wrap the return value verbatim: no JSON.stringify → no \n / \" escaping
+          // pollution. Strings pass through as-is; non-strings are rendered with
+          // JSON.stringify (indented) so the shape is still readable.
+          const returned = outcome.success
+          const returnedText =
+            returned === undefined
+              ? "undefined"
+              : typeof returned === "string"
+                ? returned
+                : JSON.stringify(returned, null, 2)
+          const returnedBytes = Buffer.byteLength(returnedText, "utf8")
+          if (returnedBytes > MAX_RESULT_BYTES) {
             return {
               title: "result too large",
               metadata: { status: "budget_exceeded", toolCalls: trace.length },
-              output: `status: budget_exceeded\nreturned value is ${json.length} bytes (max ${MAX_RESULT_BYTES}). Aggregate or slice the data before returning.${logBlock}${traceBlock}`,
+              output: `<tool_script status="budget_exceeded">\n<error_message>\nreturned value is ${returnedBytes} bytes (max ${MAX_RESULT_BYTES}). Aggregate or slice the data before returning.\n</error_message>\n${logBlock}${traceBlock}</tool_script>`,
             }
           }
 
           return {
             title: `${trace.length} tool calls`,
             metadata: { status: "completed", toolCalls: trace.length },
-            output: `status: completed\n\nResult:\n${json}${logBlock}${traceBlock}`,
+            output: `<tool_script status="completed">\n<return_value>\n${returnedText}\n</return_value>\n${logBlock}${traceBlock}</tool_script>`,
           }
         }).pipe(Effect.orDie),
     }

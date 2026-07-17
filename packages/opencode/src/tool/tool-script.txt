@@ -1,11 +1,31 @@
-Execute a TypeScript script that orchestrates existing tools programmatically. Use this for BATCH tool operations: loops, concurrency, filtering, and aggregation over many tool calls — the intermediate results stay OUT of the conversation context; only what you `return` comes back.
+Execute a TypeScript script that orchestrates existing tools programmatically.
+
+## USE THIS TOOL SPARINGLY
+
+Prefer direct tool calls almost always. `tool_script` exists for ONE narrow purpose: HIDING large or numerous intermediate tool results from the conversation context, keeping only a small aggregated value. If the intermediate results are useful to see, do NOT use this tool — direct calls give the user (and you) the native per-call TUI rendering, which is lost when calls are wrapped here.
+
+### Do NOT use tool_script when
+- A single tool call would do — call the tool directly.
+- Fewer than ~5 same-tool calls — call them directly (in parallel if independent). The per-call output is more readable than an aggregated dump.
+- You want to see each step's output — direct calls preserve titles, outputs, and per-tool renderers.
+- The next step's decision depends on judging the previous step's output — stay in the normal loop.
+- Side-effects need per-step review (writes, deletes, network mutations) — do them one at a time.
+
+### Only use tool_script when ALL of these hold
+- You will make many similar tool calls (typically 10+) and DO NOT need the intermediate outputs in context.
+- You can express the final answer as a small aggregate (a count, a filtered list of paths, a sorted top-N).
+- The reduction (filter/sort/count) is mechanical and deterministic — no semantic judgment per item.
+
+Typical fit: "scan 40 files for a pattern and return the top 10 matches" — 40 reads collapsed into a list of 10.
+
+## Contract
 
 The `code` argument is the BODY of an async function (TypeScript or JavaScript):
-- Call tools via the `tools` object, e.g. `await tools.glob({ pattern: "src/**/*.ts" })`
-- Every tool returns `Promise<ToolResult>` where `ToolResult = { title: string; output: string; metadata: Record<string, unknown> }` — `output` is the same text you would see when calling the tool directly (may be truncated for very large outputs; check `metadata.truncated`).
+- Call tools via the `tools` object: `await tools.glob({ pattern: "src/**/*.ts" })`.
+- Every tool returns `Promise<ToolResult>` where `ToolResult = { title: string; output: string; metadata: Record<string, unknown> }`. `output` is the same text the tool prints when called directly (may be truncated for very large outputs; check `metadata.truncated`).
 - Use `Promise.all` / `Promise.allSettled` for concurrency (max 8 in flight; excess queue automatically).
-- `console.log(...)` output is captured and returned alongside the result (capped) — use it for debugging, not as the primary channel.
-- `return` a SMALL, aggregated value (object/array/string). Returning huge raw data defeats the purpose.
+- `console.log(...)` output is captured and returned alongside the result (capped). Use it for debugging, not as the primary output channel.
+- `return` a SMALL, aggregated value. Returning large raw data defeats the point — the tool will hide the intermediate results but if your return value is huge, the context is polluted anyway.
 
 Limits per execution: 50 tool calls, 8 concurrent, 60s of pure compute time (time spent waiting on tool calls is NOT charged), result capped at 256KB. Exceeding a limit fails the execution with a structured error.
 
@@ -20,18 +40,14 @@ const hits = JSON.parse(await files.readText("/tmp/scan-results.json"))
 
 `tools.*` outputs are the AGENT-FACING text (e.g. `read` prefixes lines with `N: ` line numbers and may truncate). That is fine for scanning/matching, but for exact bytes (parsing JSON, byte-accurate content) use `files.readText` instead — raw content, no line numbers, no truncation. `files.readText` covers the project worktree and the OS temp dir; `files.writeText` is limited to the OS temp dir — project file writes must go through `tools.write` / `tools.edit` so permissions apply.
 
-When to use tool_script:
-- Same tool called many times (read 30 files, grep 10 patterns)
-- Results need deterministic filtering/aggregation/sorting/counting before you see them
-- Large intermediate outputs you don't need to read verbatim
+## Output format
 
-When NOT to use tool_script:
-- A single tool call — call the tool directly
-- Each step needs semantic judgment on the previous result — stay in the normal loop
-- You need to visually inspect results (images, screenshots)
-- High-risk side effects better done one at a time with your review between steps
+The tool result comes back wrapped as `<tool_script status="...">` with three child blocks — `<return_value>`, `<logs>`, `<trace>` — plus `<error_message>` on failure paths. The `return` value is embedded verbatim inside `<return_value>` (not JSON-escaped), so newlines and quotes stay readable. `<return_value>` / `<error_message>` use distinctive names so common words in the returned content (e.g. the literal token "result" or "error") won't be confused for tag boundaries.
 
-Example:
+## Example (correct use)
+
+Scan every TypeScript file for TODO comments; return the top 20 files by TODO count. 40+ reads collapsed into a 20-item list:
+
 ```
 const files = await tools.glob({ pattern: "src/**/*.ts" })
 const paths = files.output.split("\n").filter(p => p.trim() && !p.startsWith("("))
